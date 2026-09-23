@@ -918,6 +918,25 @@
     }
   };
 
+  // Reload User Data on Account Switch / Cloud Sync
+  window.reloadUserData = function () {
+    try {
+      customCramAnswers = JSON.parse(localStorage.getItem('appraiser_custom_cram') || '{}');
+      const savedFavs = JSON.parse(localStorage.getItem('appraiser_favs') || '[]');
+      favorites = new Set(savedFavs);
+      notes = JSON.parse(localStorage.getItem('appraiser_notes') || '{}');
+      if (currentTab === 'exam') {
+        renderExamPaper();
+      } else if (currentTab === 'favorites') {
+        renderFavoritesList();
+      } else if (currentTab === 'search') {
+        renderSearchList();
+      }
+    } catch (e) {
+      console.error('Error reloading user data:', e);
+    }
+  };
+
   // Timer Functions
   function updateTimerDisplay() {
     const el = document.getElementById('timerDisplay');

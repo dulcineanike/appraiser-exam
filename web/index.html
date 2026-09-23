@@ -2,7 +2,10 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#f8f7f4">
   <title>不動產估價師歷屆試題・隨機模擬考卷</title>
   <link rel="stylesheet" href="style.css">
   <meta name="description" content="不動產估價師專技高考歷屆考古題模擬考卷系統，收錄民國 91~115 年 638 題，支援 AI 嚴謹法規擬答（依全國法規資料庫最新條文）與補習班參考解答、自訂隨機組卷、倒數計時與友善A4列印">
@@ -305,6 +308,7 @@
       <!-- Sub-tabs for Member Modal -->
       <div class="member-modal-tabs">
         <button class="member-tab-btn active" id="btnMemberTabProfile" onclick="window.switchMemberModalTab('profile')">個人稱號與進度</button>
+        <button class="member-tab-btn" id="btnMemberTabAccount" onclick="window.switchMemberModalTab('account')">🔐 帳號登入與跨端同步</button>
         <button class="member-tab-btn" id="btnMemberTabHall" onclick="window.switchMemberModalTab('hall')">稱號圖鑑 (5大階級)</button>
         <button class="member-tab-btn" id="btnMemberTabLeaderboard" onclick="window.switchMemberModalTab('leaderboard')">考友貢獻榮譽榜</button>
       </div>
@@ -315,7 +319,12 @@
           <div id="memberModalProfileInfo"></div>
         </div>
 
-        <!-- Tab 2: Hall of Ranks -->
+        <!-- Tab 2: Account Login & Multi-Device Sync -->
+        <div id="memberTabAccount" class="member-tab-view" style="display:none;">
+          <div id="memberModalAccountContainer"></div>
+        </div>
+
+        <!-- Tab 3: Hall of Ranks -->
         <div id="memberTabHall" class="member-tab-view" style="display:none;">
           <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:12px;">
             在考題留下解題筆記、獲得考友點讚或完成模擬考，即可累積貢獻積分晉升稱號！
@@ -323,7 +332,7 @@
           <div id="memberModalRanksHall" class="ranks-hall-grid"></div>
         </div>
 
-        <!-- Tab 3: Leaderboard -->
+        <!-- Tab 4: Leaderboard -->
         <div id="memberTabLeaderboard" class="member-tab-view" style="display:none;">
           <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:12px;">
             全台考友互相砥礪、共同上榜！前 10 名貢獻度最高的考友榮譽排行：

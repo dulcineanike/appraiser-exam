@@ -112,14 +112,116 @@
     ]
   };
 
-  // 3. 會員資料持久化（本地 LocalStorage）
+  // 3. 會員資料持久化（本地 LocalStorage 與跨端同步）
   const STORAGE_KEY_PROFILE = 'appraiser_member_profile';
   const STORAGE_KEY_COMMUNITY_NOTES = 'appraiser_community_notes';
   const STORAGE_KEY_UPVOTED_IDS = 'appraiser_user_upvoted_notes';
+  const STORAGE_KEY_ACCOUNTS_DB = 'appraiser_accounts_db';
+  const STORAGE_KEY_AUTH_SESSION = 'appraiser_auth_session';
 
   let currentMember = null;
   let userUpvotedNoteIds = new Set();
   let localCommunityNotes = {};
+
+  // Web Crypto SHA-256 加密雜湊
+  async function sha256Hex(plainText) {
+    try {
+      const salt = 'appraiser_taiwan_salt_2026';
+      const encoder = new TextEncoder();
+      const data = encoder.encode(plainText + salt);
+      const hashBuffer = await window.crypto.subtle.digest('SHA-256', data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) {
+      let hash = 0;
+      for (let i = 0; i < plainText.length; i++) {
+        hash = ((hash << 5) - hash) + plainText.charCodeAt(i);
+        hash |= 0;
+      }
+      return 'fallback_' + Math.abs(hash).toString(16);
+    }
+  }
+
+  function getAccountsDb() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY_ACCOUNTS_DB) || '{}');
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveAccountsDb(db) {
+    try {
+      localStorage.setItem(STORAGE_KEY_ACCOUNTS_DB, JSON.stringify(db));
+    } catch (e) {
+      console.error('Failed to save accounts DB', e);
+    }
+  }
+
+  function getActiveSession() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY_AUTH_SESSION) || 'null');
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveActiveSession(session) {
+    try {
+      if (session) {
+        localStorage.setItem(STORAGE_KEY_AUTH_SESSION, JSON.stringify(session));
+      } else {
+        localStorage.removeItem(STORAGE_KEY_AUTH_SESSION);
+      }
+    } catch (e) {}
+  }
+
+  // 跨裝置同步金鑰產生器 (Cross-Device Sync Passkey Pack)
+  function generateSyncPasskey() {
+    if (!currentMember) return '';
+    try {
+      const payload = {
+        v: 1,
+        id: currentMember.id,
+        acc: currentMember.account || ('guest_' + currentMember.id.slice(-6)),
+        pwd: currentMember.passwordHash || '',
+        nick: currentMember.nickname,
+        pts: currentMember.points || 0,
+        rk: currentMember.rankTitle || '估價學徒',
+        nts: currentMember.notesCount || 0,
+        upv: currentMember.upvotesCount || 0,
+        exs: currentMember.examsCount || 0,
+        strk: currentMember.checkinStreak || 1,
+        favs: JSON.parse(localStorage.getItem('appraiser_favs') || '[]'),
+        notes: JSON.parse(localStorage.getItem('appraiser_notes') || '{}'),
+        custom: JSON.parse(localStorage.getItem('appraiser_custom_cram') || '{}'),
+        ts: Date.now()
+      };
+      const jsonStr = unescape(encodeURIComponent(JSON.stringify(payload)));
+      return 'APPR-SYNC-' + btoa(jsonStr);
+    } catch (e) {
+      console.error('Failed to generate sync passkey', e);
+      return '';
+    }
+  }
+
+  // 跨裝置同步金鑰解碼器
+  function parseSyncPasskey(passkey) {
+    try {
+      let raw = (passkey || '').trim();
+      if (raw.startsWith('APPR-SYNC-')) {
+        raw = raw.replace('APPR-SYNC-', '');
+      }
+      const jsonStr = decodeURIComponent(escape(atob(raw)));
+      const payload = JSON.parse(jsonStr);
+      if (!payload || !payload.acc) {
+        throw new Error('Invalid passkey structure');
+      }
+      return payload;
+    } catch (e) {
+      return null;
+    }
+  }
 
   function initMemberSystem() {
     // 讀取點讚紀錄
@@ -141,21 +243,38 @@
       localCommunityNotes = JSON.parse(JSON.stringify(SEED_NOTES));
     }
 
-    // 讀取或初始化會員檔案
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_PROFILE);
-      if (saved) {
-        currentMember = JSON.parse(saved);
+    // 讀取活動 Session 帳號
+    const session = getActiveSession();
+    if (session && session.account) {
+      const accountsDb = getAccountsDb();
+      const accountData = accountsDb[session.account.toLowerCase()];
+      if (accountData) {
+        currentMember = {
+          ...accountData,
+          isGuest: false
+        };
       }
-    } catch (e) {
-      currentMember = null;
+    }
+
+    // 若無活動 Session 則讀取或初始化訪客檔案
+    if (!currentMember) {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY_PROFILE);
+        if (saved) {
+          currentMember = JSON.parse(saved);
+        }
+      } catch (e) {
+        currentMember = null;
+      }
     }
 
     if (!currentMember) {
-      // 首次產生新會員
+      // 首次產生新訪客
       const randomNum = Math.floor(1000 + Math.random() * 9000);
       currentMember = {
         id: 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+        account: null,
+        isGuest: true,
         nickname: `估價考生_${randomNum}`,
         points: 0,
         rankTitle: '估價學徒',
@@ -182,9 +301,107 @@
   function saveMemberProfile() {
     try {
       localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(currentMember));
+      // 若已登入正式帳號，即時同步至 accountsDb 與用戶數據
+      if (currentMember && currentMember.account && !currentMember.isGuest) {
+        const db = getAccountsDb();
+        const acc = currentMember.account.toLowerCase();
+        db[acc] = {
+          ...(db[acc] || {}),
+          ...currentMember,
+          favorites: JSON.parse(localStorage.getItem('appraiser_favs') || '[]'),
+          notes: JSON.parse(localStorage.getItem('appraiser_notes') || '{}'),
+          customCram: JSON.parse(localStorage.getItem('appraiser_custom_cram') || '{}'),
+          updatedAt: new Date().toISOString()
+        };
+        saveAccountsDb(db);
+        cloudSyncPushProfile(currentMember);
+      }
     } catch (e) {
       console.error('Failed to save member profile', e);
     }
+  }
+
+  // Supabase 雲端資料庫多端同步支援（若已設定 window.SUPABASE_CONFIG）
+  function isSupabaseConfigured() {
+    return Boolean(
+      window.SUPABASE_CONFIG &&
+      window.SUPABASE_CONFIG.url &&
+      window.SUPABASE_CONFIG.anonKey &&
+      window.SUPABASE_CONFIG.url.startsWith('http')
+    );
+  }
+
+  async function cloudSyncPushProfile(profile) {
+    if (!isSupabaseConfigured() || !profile || !profile.account) return;
+    try {
+      const url = `${window.SUPABASE_CONFIG.url}/rest/v1/member_profiles?on_conflict=id`;
+      await fetch(url, {
+        method: 'POST',
+        headers: {
+          'apikey': window.SUPABASE_CONFIG.anonKey,
+          'Authorization': `Bearer ${window.SUPABASE_CONFIG.anonKey}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify({
+          id: profile.id,
+          account: profile.account,
+          password_hash: profile.passwordHash,
+          nickname: profile.nickname,
+          points: profile.points,
+          rank_title: profile.rankTitle,
+          notes_count: profile.notesCount,
+          upvotes_count: profile.upvotesCount,
+          exams_count: profile.examsCount,
+          last_checkin_date: profile.lastCheckinDate,
+          user_data: {
+            favorites: JSON.parse(localStorage.getItem('appraiser_favs') || '[]'),
+            notes: JSON.parse(localStorage.getItem('appraiser_notes') || '{}'),
+            customCram: JSON.parse(localStorage.getItem('appraiser_custom_cram') || '{}')
+          },
+          updated_at: new Date().toISOString()
+        })
+      });
+    } catch (e) {
+      console.warn('Cloud sync push notification', e);
+    }
+  }
+
+  async function cloudSyncFetchAccount(account) {
+    if (!isSupabaseConfigured()) return null;
+    try {
+      const url = `${window.SUPABASE_CONFIG.url}/rest/v1/member_profiles?account=eq.${encodeURIComponent(account)}&select=*`;
+      const res = await fetch(url, {
+        headers: {
+          'apikey': window.SUPABASE_CONFIG.anonKey,
+          'Authorization': `Bearer ${window.SUPABASE_CONFIG.anonKey}`
+        }
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data && data.length > 0) {
+        const row = data[0];
+        return {
+          id: row.id,
+          account: row.account,
+          nickname: row.nickname,
+          passwordHash: row.password_hash,
+          points: row.points,
+          rankTitle: row.rank_title,
+          notesCount: row.notes_count,
+          upvotesCount: row.upvotes_count,
+          examsCount: row.exams_count,
+          lastCheckinDate: row.last_checkin_date,
+          favorites: (row.user_data && row.user_data.favorites) || [],
+          notes: (row.user_data && row.user_data.notes) || {},
+          customCram: (row.user_data && row.user_data.customCram) || {},
+          updatedAt: row.updated_at
+        };
+      }
+    } catch (e) {
+      console.warn('Cloud sync fetch notification', e);
+    }
+    return null;
   }
 
   function saveCommunityNotes() {
@@ -199,6 +416,241 @@
     try {
       localStorage.setItem(STORAGE_KEY_UPVOTED_IDS, JSON.stringify([...userUpvotedNoteIds]));
     } catch (e) {}
+  }
+
+  // 帳號註冊 (支援合併既有訪客刷題進度)
+  async function registerAccount(accountInput, passwordInput, nicknameInput) {
+    const account = (accountInput || '').trim().toLowerCase();
+    const password = (passwordInput || '').trim();
+    const nickname = (nicknameInput || '').trim();
+
+    if (!account || account.length < 3) {
+      alert('帳號長度至少需 3 個字元（英數字、底線或 Email）！');
+      return false;
+    }
+    if (!password || password.length < 6) {
+      alert('密碼長度至少需 6 個字元以上！');
+      return false;
+    }
+    if (!nickname) {
+      alert('請輸入您在社群筆記中顯示的考友暱稱！');
+      return false;
+    }
+
+    const accountsDb = getAccountsDb();
+    if (accountsDb[account]) {
+      alert(`帳號「${account}」已被註冊，請直接點選「登入現有帳號」或更換帳號名稱！`);
+      return false;
+    }
+
+    const pwdHash = await sha256Hex(password);
+    const pts = currentMember ? (currentMember.points || 0) : 0;
+    const rank = getRankByPoints(pts);
+
+    const accountRecord = {
+      id: currentMember ? currentMember.id : ('usr_' + Date.now()),
+      account: account,
+      nickname: nickname,
+      passwordHash: pwdHash,
+      points: pts,
+      rankTitle: rank.title,
+      notesCount: currentMember ? (currentMember.notesCount || 0) : 0,
+      upvotesCount: currentMember ? (currentMember.upvotesCount || 0) : 0,
+      examsCount: currentMember ? (currentMember.examsCount || 0) : 0,
+      checkinStreak: currentMember ? (currentMember.checkinStreak || 1) : 1,
+      lastCheckinDate: currentMember ? (currentMember.lastCheckinDate || '') : '',
+      favorites: JSON.parse(localStorage.getItem('appraiser_favs') || '[]'),
+      notes: JSON.parse(localStorage.getItem('appraiser_notes') || '{}'),
+      customCram: JSON.parse(localStorage.getItem('appraiser_custom_cram') || '{}'),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    accountsDb[account] = accountRecord;
+    saveAccountsDb(accountsDb);
+
+    currentMember = {
+      ...accountRecord,
+      isGuest: false
+    };
+    saveMemberProfile();
+    saveActiveSession({ account: account, loggedInAt: Date.now() });
+
+    cloudSyncPushProfile(currentMember);
+
+    updateHeaderMemberCapsule();
+    showPointsToast(0, '🎉 恭喜註冊成功！已自動登入並合併您的全部刷題進度', rank);
+
+    window.switchMemberModalTab('account');
+    return true;
+  }
+
+  // 帳號登入
+  async function loginAccount(accountInput, passwordInput) {
+    const account = (accountInput || '').trim().toLowerCase();
+    const password = (passwordInput || '').trim();
+
+    if (!account || !password) {
+      alert('請輸入帳號與密碼！');
+      return false;
+    }
+
+    const accountsDb = getAccountsDb();
+    const pwdHash = await sha256Hex(password);
+
+    let found = accountsDb[account];
+    // 若本機查無此帳號且有設定雲端資料庫，從雲端拉取
+    if (!found && isSupabaseConfigured()) {
+      found = await cloudSyncFetchAccount(account);
+      if (found) {
+        accountsDb[account] = found;
+        saveAccountsDb(accountsDb);
+      }
+    }
+
+    if (!found) {
+      alert(`查無此帳號「${account}」！\n若您是首次使用，請點選「註冊新帳號」；或在其他裝置複製「跨裝置同步金鑰」貼入即可直接登入。`);
+      return false;
+    }
+
+    if (found.passwordHash && found.passwordHash !== pwdHash) {
+      alert('密碼不正確，請重新輸入！');
+      return false;
+    }
+
+    currentMember = {
+      ...found,
+      isGuest: false
+    };
+    saveMemberProfile();
+    saveActiveSession({ account: account, loggedInAt: Date.now() });
+
+    if (found.favorites) {
+      localStorage.setItem('appraiser_favs', JSON.stringify(found.favorites));
+    }
+    if (found.notes) {
+      localStorage.setItem('appraiser_notes', JSON.stringify(found.notes));
+    }
+    if (found.customCram) {
+      localStorage.setItem('appraiser_custom_cram', JSON.stringify(found.customCram));
+    }
+    if (window.reloadUserData) {
+      window.reloadUserData();
+    }
+
+    recalculateMemberRank();
+    updateHeaderMemberCapsule();
+    const rank = getRankByPoints(currentMember.points);
+    showPointsToast(0, `👋 歡迎回來，${currentMember.nickname}！已成功登入會員帳號`, rank);
+
+    window.switchMemberModalTab('account');
+    return true;
+  }
+
+  // 帳號登出
+  function logoutAccount() {
+    if (!confirm('確定要登出當前帳號嗎？登出後將切換為訪客模式，隨時可再次登入。')) {
+      return;
+    }
+
+    if (currentMember && currentMember.account) {
+      const accountsDb = getAccountsDb();
+      accountsDb[currentMember.account.toLowerCase()] = {
+        ...currentMember,
+        favorites: JSON.parse(localStorage.getItem('appraiser_favs') || '[]'),
+        notes: JSON.parse(localStorage.getItem('appraiser_notes') || '{}'),
+        customCram: JSON.parse(localStorage.getItem('appraiser_custom_cram') || '{}'),
+        updatedAt: new Date().toISOString()
+      };
+      saveAccountsDb(accountsDb);
+    }
+
+    saveActiveSession(null);
+
+    const randomNum = Math.floor(1000 + Math.random() * 9000);
+    currentMember = {
+      id: 'usr_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      account: null,
+      isGuest: true,
+      nickname: `估價考生_${randomNum}`,
+      points: 0,
+      rankTitle: '估價學徒',
+      notesCount: 0,
+      upvotesCount: 0,
+      examsCount: 0,
+      lastCheckinDate: '',
+      checkinStreak: 0,
+      createdAt: new Date().toISOString()
+    };
+    saveMemberProfile();
+    updateHeaderMemberCapsule();
+
+    if (window.reloadUserData) {
+      window.reloadUserData();
+    }
+
+    alert('您已安全登出！目前為訪客體驗模式。');
+    window.switchMemberModalTab('account');
+  }
+
+  // 跨裝置同步金鑰匯入登入
+  function importSyncPasskey(keyString) {
+    const payload = parseSyncPasskey(keyString);
+    if (!payload) {
+      alert('無效或格式錯誤的跨裝置同步金鑰！請確認是否完整複製以「APPR-SYNC-」開頭的金鑰。');
+      return false;
+    }
+
+    const accountsDb = getAccountsDb();
+    const accKey = (payload.acc || 'user_' + Date.now()).toLowerCase();
+
+    const accountRecord = {
+      id: payload.id || ('usr_' + Date.now()),
+      account: payload.acc,
+      nickname: payload.nick || '估價考友',
+      passwordHash: payload.pwd || '',
+      points: payload.pts || 0,
+      rankTitle: payload.rk || '估價學徒',
+      notesCount: payload.nts || 0,
+      upvotesCount: payload.upv || 0,
+      examsCount: payload.exs || 0,
+      checkinStreak: payload.strk || 1,
+      favorites: payload.favs || [],
+      notes: payload.notes || {},
+      customCram: payload.custom || {},
+      updatedAt: new Date().toISOString()
+    };
+
+    accountsDb[accKey] = accountRecord;
+    saveAccountsDb(accountsDb);
+
+    currentMember = {
+      ...accountRecord,
+      isGuest: false
+    };
+    saveMemberProfile();
+    saveActiveSession({ account: payload.acc, loggedInAt: Date.now() });
+
+    if (payload.favs) {
+      localStorage.setItem('appraiser_favs', JSON.stringify(payload.favs));
+    }
+    if (payload.notes) {
+      localStorage.setItem('appraiser_notes', JSON.stringify(payload.notes));
+    }
+    if (payload.custom) {
+      localStorage.setItem('appraiser_custom_cram', JSON.stringify(payload.custom));
+    }
+    if (window.reloadUserData) {
+      window.reloadUserData();
+    }
+
+    recalculateMemberRank();
+    updateHeaderMemberCapsule();
+    const rank = getRankByPoints(currentMember.points);
+    showPointsToast(0, `📱 跨裝置帳號同步成功！已成功載入「${payload.nick}」所有答題進度 (${currentMember.points} pt)`, rank);
+
+    window.switchMemberModalTab('account');
+    return true;
   }
 
   // 4. 等級稱號計算邏輯
@@ -458,7 +910,19 @@
     // 渲染個人資訊與進度條
     const infoContainer = document.getElementById('memberModalProfileInfo');
     if (infoContainer) {
+      const isLogged = currentMember && !currentMember.isGuest && currentMember.account;
       infoContainer.innerHTML = `
+        <!-- Account Status Capsule Banner -->
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; margin-bottom:14px; border-radius:var(--radius-sm); font-size:0.86rem; ${isLogged ? 'background:#e8f5e9; border:1px solid #a3cfbb; color:#198754;' : 'background:#fff3cd; border:1px solid #ffeeba; color:#856404;'}">
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span>${isLogged ? '✓' : '⚠️'}</span>
+            <span>${isLogged ? `已登入會員帳號：<strong>${escapeHtml(currentMember.account)}</strong>` : '目前為訪客模式（換手機或電腦無法同步）'}</span>
+          </div>
+          <button class="timer-btn" style="padding:4px 10px; font-size:0.8rem; border-color:currentColor;" onclick="window.switchMemberModalTab('account')">
+            ${isLogged ? '📱 跨裝置同步金鑰' : '🔐 登入/註冊帳號以同步'}
+          </button>
+        </div>
+
         <div class="member-hero-card" style="background: ${rank.bg}; border-color: ${rank.border};">
           <div class="member-hero-header">
             <div class="member-avatar-box">${rank.badge}</div>
@@ -507,6 +971,9 @@
         </div>
       `;
     }
+
+    // 同步渲染帳號管理分頁
+    renderAccountTabView();
 
     // 渲染稱號圖鑑 (Hall of Ranks)
     const ranksContainer = document.getElementById('memberModalRanksHall');
@@ -592,8 +1059,206 @@
     }
   };
 
+  // 帳號認證分頁 UI 渲染
+  let currentAuthTabMode = 'login'; // 'login' | 'register' | 'sync'
+
+  window.setAuthTabMode = function (mode) {
+    currentAuthTabMode = mode;
+    renderAccountTabView();
+  };
+
+  function renderAccountTabView() {
+    const container = document.getElementById('memberModalAccountContainer');
+    if (!container) return;
+
+    const isLogged = currentMember && !currentMember.isGuest && currentMember.account;
+    const rank = getRankByPoints(currentMember ? currentMember.points : 0);
+
+    if (isLogged) {
+      const syncKey = generateSyncPasskey();
+      container.innerHTML = `
+        <div class="auth-card-logged-in">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="auth-status-badge synced">✓ 已登入正式會員帳號</span>
+              <span style="font-size:0.8rem; color:var(--text-muted);">跨裝置連線已啟用</span>
+            </div>
+            <button class="btn-text-edit" onclick="window.logoutAccount()" style="font-size:0.84rem; color:var(--accent-vermilion); cursor:pointer;">
+              🚪 登出帳號
+            </button>
+          </div>
+
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-bottom:16px;">
+            <div class="stat-cell" style="background:var(--bg-subtle);">
+              <div style="font-size:0.75rem; color:var(--text-muted);">登入帳號</div>
+              <div style="font-weight:700; color:var(--text-sumi); font-size:1.0rem;">${escapeHtml(currentMember.account)}</div>
+            </div>
+            <div class="stat-cell" style="background:var(--bg-subtle);">
+              <div style="font-size:0.75rem; color:var(--text-muted);">社群暱稱</div>
+              <div style="font-weight:700; color:var(--text-sumi); font-size:1.0rem;">${escapeHtml(currentMember.nickname)}</div>
+            </div>
+            <div class="stat-cell" style="background:var(--bg-subtle);">
+              <div style="font-size:0.75rem; color:var(--text-muted);">榮譽稱號</div>
+              <div style="font-weight:700; color:${rank.color}; font-size:1.0rem;">${rank.badge} ${rank.title}</div>
+            </div>
+            <div class="stat-cell" style="background:var(--bg-subtle);">
+              <div style="font-size:0.75rem; color:var(--text-muted);">累積積分</div>
+              <div style="font-weight:700; color:var(--text-sumi); font-size:1.0rem;">${currentMember.points} pt</div>
+            </div>
+          </div>
+
+          <!-- Cross-device Sync Section -->
+          <div class="sync-passkey-box">
+            <div style="font-size:0.92rem; font-weight:700; color:var(--text-sumi); margin-bottom:6px; display:flex; align-items:center; gap:6px;">
+              <span>📱</span>
+              <span>在手機或其他電腦登入同一個帳號</span>
+            </div>
+            <div style="font-size:0.82rem; color:var(--text-muted); margin-bottom:10px; line-height:1.5;">
+              想在手機隨時刷題？您可以在手機瀏覽器點擊右上角會員圖示，直接輸入上方帳號與密碼；或者複製下方「跨裝置同步金鑰」貼上，即可一秒將目前所有積分、草稿筆記與收藏題庫同步到手機！
+            </div>
+            <textarea class="sync-passkey-textarea" id="mySyncPasskeyInput" readonly onclick="this.select()">${syncKey}</textarea>
+            <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+              <button class="comm-publish-btn" onclick="window.copyMySyncPasskey()" style="padding:7px 16px; font-size:0.85rem;">
+                📋 一鍵複製跨裝置同步金鑰
+              </button>
+            </div>
+          </div>
+
+          <div class="auth-btn-row">
+            <button class="timer-btn" onclick="window.setAuthTabMode('login')" style="flex:1;">
+              👥 切換其他帳號
+            </button>
+            <button class="timer-btn" onclick="window.switchMemberModalTab('profile')" style="flex:1;">
+              📊 查看我的稱號進度
+            </button>
+          </div>
+        </div>
+      `;
+    } else {
+      // Guest Mode Form
+      const pts = currentMember ? (currentMember.points || 0) : 0;
+      container.innerHTML = `
+        <div class="auth-container">
+          <div class="auth-guest-notice">
+            <div style="display:flex; align-items:center; gap:6px; font-weight:700; margin-bottom:4px;">
+              <span>💡 目前為訪客模式（已累積 ${pts} 積分）</span>
+            </div>
+            <div>
+              建立帳號後，您在不同電腦、手機或平板都可以登入同一個帳號刷題！現有累積的積分、草稿筆記與收藏題目將自動合併保留至新帳號中。
+            </div>
+          </div>
+
+          <div class="auth-nav-pills">
+            <button class="auth-nav-pill ${currentAuthTabMode === 'login' ? 'active' : ''}" onclick="window.setAuthTabMode('login')">
+              登入現有帳號
+            </button>
+            <button class="auth-nav-pill ${currentAuthTabMode === 'register' ? 'active' : ''}" onclick="window.setAuthTabMode('register')">
+              註冊新帳號
+            </button>
+            <button class="auth-nav-pill ${currentAuthTabMode === 'sync' ? 'active' : ''}" onclick="window.setAuthTabMode('sync')">
+              貼上跨裝置金鑰
+            </button>
+          </div>
+
+          ${currentAuthTabMode === 'login' ? `
+            <!-- Login Form -->
+            <form id="formAuthLogin" onsubmit="event.preventDefault(); window.submitAuthLogin();">
+              <div class="auth-form-group">
+                <label class="auth-form-label" for="loginAccInput">帳號或 Email：</label>
+                <input type="text" id="loginAccInput" class="auth-input" placeholder="請輸入註冊帳號或 Email" required autocomplete="username">
+              </div>
+              <div class="auth-form-group">
+                <label class="auth-form-label" for="loginPwdInput">密碼：</label>
+                <input type="password" id="loginPwdInput" class="auth-input" placeholder="請輸入登入密碼" required autocomplete="current-password">
+              </div>
+              <button type="submit" class="auth-submit-btn">
+                🔐 登入會員帳號並同步資料
+              </button>
+              <div style="text-align:center; margin-top:12px; font-size:0.82rem; color:var(--text-muted);">
+                還沒有帳號？ <a href="javascript:void(0)" onclick="window.setAuthTabMode('register')" style="color:var(--accent-indigo); font-weight:600;">立即免費註冊</a>
+              </div>
+            </form>
+          ` : currentAuthTabMode === 'register' ? `
+            <!-- Register Form -->
+            <form id="formAuthRegister" onsubmit="event.preventDefault(); window.submitAuthRegister();">
+              <div class="auth-form-group">
+                <label class="auth-form-label" for="regAccInput">自訂帳號（英數字或 Email）：</label>
+                <input type="text" id="regAccInput" class="auth-input" placeholder="例如：appraiser_pro 或 user@gmail.com" required autocomplete="username">
+              </div>
+              <div class="auth-form-group">
+                <label class="auth-form-label" for="regNickInput">考友社群顯示暱稱：</label>
+                <input type="text" id="regNickInput" class="auth-input" value="${escapeHtml(currentMember ? currentMember.nickname : '')}" placeholder="例如：陳品睿 估價師" required>
+              </div>
+              <div class="auth-form-group">
+                <label class="auth-form-label" for="regPwdInput">設定登入密碼（至少 6 位）：</label>
+                <input type="password" id="regPwdInput" class="auth-input" placeholder="設定 6 位以上密碼" required autocomplete="new-password">
+              </div>
+              <button type="submit" class="auth-submit-btn">
+                🎉 立即註冊並合併現有 ${pts} 積分
+              </button>
+              <div style="text-align:center; margin-top:12px; font-size:0.82rem; color:var(--text-muted);">
+                已有帳號？ <a href="javascript:void(0)" onclick="window.setAuthTabMode('login')" style="color:var(--accent-indigo); font-weight:600;">點此登入</a>
+              </div>
+            </form>
+          ` : `
+            <!-- Sync Passkey Form -->
+            <form id="formAuthSync" onsubmit="event.preventDefault(); window.submitAuthSync();">
+              <div class="auth-form-group">
+                <label class="auth-form-label" for="syncPasskeyInput">貼上在電腦或其他手機複製的跨裝置同步金鑰：</label>
+                <textarea id="syncPasskeyInput" class="sync-passkey-textarea" style="height:90px;" placeholder="貼上 APPR-SYNC-... 格式的金鑰" required></textarea>
+              </div>
+              <button type="submit" class="auth-submit-btn">
+                📱 立即匯入並登入同步
+              </button>
+              <div style="font-size:0.78rem; color:var(--text-muted); margin-top:8px; line-height:1.5;">
+                💡 在另一台電腦登入帳號後，進入「會員中心」$\to$「帳號登入與跨端同步」即可點擊複製專屬同步金鑰。
+              </div>
+            </form>
+          `}
+        </div>
+      `;
+    }
+  }
+
+  window.copyMySyncPasskey = function () {
+    const el = document.getElementById('mySyncPasskeyInput');
+    if (!el) return;
+    el.select();
+    try {
+      navigator.clipboard.writeText(el.value).then(() => {
+        alert('跨裝置同步金鑰已複製到剪貼簿！\n在手機開啟本網頁，點擊右上角會員 $\to$「帳號登入與跨端同步」$\to$「貼上跨裝置金鑰」即可一秒登入同步！');
+      }).catch(() => {
+        document.execCommand('copy');
+        alert('跨裝置同步金鑰已複製到剪貼簿！');
+      });
+    } catch (e) {
+      document.execCommand('copy');
+      alert('跨裝置同步金鑰已複製到剪貼簿！');
+    }
+  };
+
+  window.submitAuthLogin = async function () {
+    const acc = document.getElementById('loginAccInput').value;
+    const pwd = document.getElementById('loginPwdInput').value;
+    await loginAccount(acc, pwd);
+  };
+
+  window.submitAuthRegister = async function () {
+    const acc = document.getElementById('regAccInput').value;
+    const pwd = document.getElementById('regPwdInput').value;
+    const nick = document.getElementById('regNickInput').value;
+    await registerAccount(acc, pwd, nick);
+  };
+
+  window.submitAuthSync = function () {
+    const key = document.getElementById('syncPasskeyInput').value;
+    importSyncPasskey(key);
+  };
+
+  window.logoutAccount = logoutAccount;
+
   window.switchMemberModalTab = function (tabName) {
-    const tabs = ['profile', 'hall', 'leaderboard'];
+    const tabs = ['profile', 'account', 'hall', 'leaderboard'];
     tabs.forEach(t => {
       const btn = document.getElementById(`btnMemberTab${t.charAt(0).toUpperCase() + t.slice(1)}`);
       const view = document.getElementById(`memberTab${t.charAt(0).toUpperCase() + t.slice(1)}`);
@@ -603,6 +1268,10 @@
         view.classList.toggle('active', t === tabName);
       }
     });
+
+    if (tabName === 'account') {
+      renderAccountTabView();
+    }
   };
 
   function escapeHtml(str) {
@@ -625,6 +1294,11 @@
     addNote: addCommunityNote,
     upvoteNote: upvoteNote,
     getLeaderboard: getLeaderboard,
+    register: registerAccount,
+    login: loginAccount,
+    logout: logoutAccount,
+    generateSyncPasskey: generateSyncPasskey,
+    importSyncPasskey: importSyncPasskey,
     POINT_RULES: POINT_RULES,
     escapeHtml: escapeHtml
   };

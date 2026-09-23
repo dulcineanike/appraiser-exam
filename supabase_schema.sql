@@ -9,12 +9,15 @@ create extension if not exists "uuid-ossp";
 -- 2. 會員個人檔案資料表 (member_profiles)
 create table if not exists public.member_profiles (
   id text primary key,                     -- 使用者唯一 ID (UUID 或隨機碼)
+  account text unique,                     -- 登入帳號或 Email (支援跨裝置登入)
+  password_hash text,                      -- SHA-256 密碼雜湊
   nickname text not null default '匿名考友', -- 暱稱
   points integer not null default 0,       -- 累積貢獻積分
   rank_title text not null default '估價學徒',-- 當前等級稱號
   notes_count integer not null default 0,  -- 發布筆記總數
   upvotes_count integer not null default 0,-- 獲得點讚總數
   exams_count integer not null default 0,  -- 完成模擬考次數
+  user_data jsonb default '{}'::jsonb,     -- 收藏題目、答題草稿、自訂解答備份
   last_checkin_date date,                  -- 最後簽到日期
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
   updated_at timestamp with time zone default timezone('utc'::text, now()) not null
