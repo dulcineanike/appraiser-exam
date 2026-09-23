@@ -1,0 +1,267 @@
+# Helper script to update index.html and app.js cleanly
+import os
+
+WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'web')
+
+html_content = '''<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>不動產估價師歷屆試題・隨機模擬考卷</title>
+  <link rel="stylesheet" href="style.css">
+  <meta name="description" content="不動產估價師專技高考歷屆考古題模擬考卷系統，收錄民國 91~114 年 612 題，支援三大權威解答對照（高點・公職王・陳翰基）、自訂隨機組卷、倒數計時與友善A4列印">
+</head>
+<body>
+
+  <!-- App Header -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand-area">
+        <div class="brand-icon">考</div>
+        <div>
+          <h1 class="brand-title">不動產估價師・歷屆試題與模擬考系統</h1>
+          <div class="brand-subtitle">收錄民國 91～114 年國家考試 612 題 ｜ 內建三大權威解答對照庫</div>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs (首頁預設為「題庫檢索」) -->
+      <nav class="nav-tabs">
+        <button class="tab-btn active" data-tab="search" onclick="switchTab('search')">
+          題庫檢索
+        </button>
+        <button class="tab-btn" data-tab="generator" onclick="switchTab('generator')">
+          隨機組卷
+        </button>
+        <button class="tab-btn" data-tab="exam" onclick="switchTab('exam')">
+          考卷作答室
+        </button>
+        <button class="tab-btn" data-tab="favorites" onclick="switchTab('favorites')">
+          重點收藏
+        </button>
+        <button class="tab-btn" data-tab="stats" onclick="switchTab('stats')">
+          題庫統計
+        </button>
+      </nav>
+
+      <!-- Header Actions -->
+      <div class="header-actions">
+        <button class="btn-icon" onclick="printExam()" title="友善 A4 列印考卷 (Ctrl+P)">🖨️</button>
+        <button class="btn-icon" onclick="exportExamTxt()" title="匯出純文字檔">💾</button>
+        <button class="btn-icon" onclick="toggleTheme()" title="切換深淺模式">🌓</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-container" id="mainContent">
+
+    <!-- TAB 1 (首頁): 題庫檢索 (Search & Bank) -->
+    <section id="view-search" class="tab-content active">
+      <div class="search-bar-box">
+        <div class="search-input-wrapper">
+          <input type="text" id="searchInput" class="search-input" 
+            placeholder="檢索題目內文關鍵字（例如：抵押權、市地重劃、折現率、容積移轉、殘餘法）..." 
+            oninput="renderSearchList()">
+        </div>
+        <select id="searchSubjectSelect" class="select-control" style="width: auto; min-width: 190px;" onchange="renderSearchList()">
+          <option value="all">所有科目 (全部 612 題)</option>
+          <option value="民法物權與不動產法規">民法物權與不動產法規</option>
+          <option value="土地利用法規">土地利用法規</option>
+          <option value="不動產投資分析">不動產投資分析</option>
+          <option value="不動產經濟學">不動產經濟學</option>
+          <option value="不動產估價理論">不動產估價理論</option>
+          <option value="不動產估價實務">不動產估價實務</option>
+          <option value="國文">國文</option>
+        </select>
+        <select id="searchYearSelect" class="select-control" style="width: auto; min-width: 130px;" onchange="renderSearchList()">
+          <option value="all">所有年份 (91~114)</option>
+          <option value="114">114 年</option>
+          <option value="113">113 年</option>
+          <option value="112">112 年</option>
+          <option value="111">111 年</option>
+          <option value="110">110 年</option>
+          <option value="109">109 年</option>
+          <option value="108">108 年</option>
+          <option value="107">107 年</option>
+          <option value="106">106 年</option>
+          <option value="105">105 年</option>
+          <option value="104">104 年</option>
+          <option value="103">103 年</option>
+          <option value="102">102 年</option>
+          <option value="101">101 年</option>
+          <option value="100">100 年</option>
+          <option value="99">99 年</option>
+          <option value="98">98 年</option>
+          <option value="97">97 年</option>
+          <option value="96">96 年</option>
+          <option value="95">95 年</option>
+          <option value="94">94 年</option>
+          <option value="93">93 年</option>
+          <option value="92">92 年</option>
+          <option value="91">91 年</option>
+        </select>
+        <select id="searchSortSelect" class="select-control" style="width: auto; min-width: 170px;" onchange="renderSearchList()">
+          <option value="yearDesc" selected>最新年度優先 (114 → 91)</option>
+          <option value="yearAsc">歷史年度優先 (91 → 114)</option>
+        </select>
+        <div class="stats-badge" id="searchCountBadge">載入中...</div>
+      </div>
+
+      <div id="searchResultContainer" class="question-list">
+        <!-- Rendered by app.js -->
+      </div>
+    </section>
+
+    <!-- TAB 2: 隨機組卷 (Generator) -->
+    <section id="view-generator" class="tab-content" style="display:none;">
+      <!-- Fast Presets Bar -->
+      <div style="margin-bottom: 10px; font-size: 0.82rem; font-weight: 600; color: var(--text-muted); letter-spacing: 0.05em;">
+        快速組卷範本
+      </div>
+      <div class="preset-bar">
+        <button class="preset-chip highlight" onclick="quickPreset('full6')">
+          全真六科大模擬 (24題)
+        </button>
+        <button class="preset-chip" onclick="quickPreset('civil4')">
+          民法物權與不動產法規 (4題)
+        </button>
+        <button class="preset-chip" onclick="quickPreset('landuse4')">
+          土地利用法規 (4題)
+        </button>
+        <button class="preset-chip" onclick="quickPreset('appraisal4')">
+          不動產估價理論 (4題)
+        </button>
+        <button class="preset-chip" onclick="quickPreset('practice2')">
+          不動產估價實務 (2題)
+        </button>
+        <button class="preset-chip" onclick="quickPreset('econ4')">
+          不動產經濟學 (4題)
+        </button>
+        <button class="preset-chip" onclick="quickPreset('invest4')">
+          不動產投資分析 (4題)
+        </button>
+        <button class="preset-chip" onclick="quickPreset('daily1')">
+          每日一練 (1題)
+        </button>
+      </div>
+
+      <!-- Custom Generator Form -->
+      <div class="config-card">
+        <h2 style="font-family: var(--font-serif); font-size: 1.1rem; font-weight: 700; margin-bottom: 20px; color: var(--text-sumi); letter-spacing: 0.06em;">
+          自訂組卷條件
+        </h2>
+
+        <div class="config-grid">
+          <!-- Subject Selector -->
+          <div class="config-group" style="grid-column: 1 / -1;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
+              <label style="margin-bottom:0;">考試科目（可自由勾選）：</label>
+              <div style="display:flex; gap:6px;">
+                <button type="button" class="timer-btn" onclick="selectAllProfessional()">選取專業 6 科</button>
+                <button type="button" class="timer-btn" onclick="clearAllSubjects()">清除</button>
+              </div>
+            </div>
+            <div class="subject-pills" id="subjectPills">
+              <!-- Dynamically rendered -->
+            </div>
+          </div>
+
+          <!-- Question Count -->
+          <div class="config-group">
+            <label for="qCountInput">抽取題數：</label>
+            <select id="qCountInput" class="select-control">
+              <option value="1">1 題（每日精練）</option>
+              <option value="2">2 題</option>
+              <option value="3">3 題</option>
+              <option value="4" selected>4 題（標準國家考試申論題數）</option>
+              <option value="5">5 題</option>
+              <option value="6">6 題</option>
+              <option value="8">8 題（雙科模擬）</option>
+              <option value="24">24 題（六科大模擬考）</option>
+            </select>
+          </div>
+
+          <!-- Year Range -->
+          <div class="config-group">
+            <label for="yearRangeSelect">收錄年份範圍：</label>
+            <select id="yearRangeSelect" class="select-control">
+              <option value="all" selected>全部年份（民國 91～114 年，共 24 年）</option>
+              <option value="recent10">近 10 年精選（民國 105～114 年・推薦法規最新）</option>
+              <option value="recent5">近 5 年衝刺（民國 110～114 年）</option>
+              <option value="recent15">近 15 年（民國 100～114 年）</option>
+            </select>
+          </div>
+        </div>
+
+        <button class="btn-generate" onclick="generateExam()">
+          隨機抽取題目並組成試卷
+        </button>
+      </div>
+    </section>
+
+    <!-- TAB 3: 考卷作答室 (Exam) -->
+    <section id="view-exam" class="tab-content" style="display:none;">
+      <!-- Exam Room Controls -->
+      <div class="exam-toolbar">
+        <div class="timer-box">
+          <div style="font-size:0.8rem; font-weight:600; color:var(--text-muted); letter-spacing:0.05em;">作答時間</div>
+          <div class="timer-display" id="timerDisplay">02:00:00</div>
+          <button class="timer-btn" id="timerToggleBtn" onclick="toggleTimer()">開始</button>
+          <button class="timer-btn" onclick="resetTimer()">重設</button>
+        </div>
+
+        <div class="exam-actions">
+          <label class="switch-label" title="隱藏考題年份，交卷或點擊才揭曉出處">
+            <input type="checkbox" id="blindModeToggle" onchange="onBlindModeChange()">
+            <span>盲測模式</span>
+          </label>
+          <button class="btn-secondary" onclick="generateExam()" title="重新抽選一組試題">
+            重新抽卷
+          </button>
+          <button class="btn-secondary" onclick="printExam()" title="友善 A4 排版列印">
+            列印試卷
+          </button>
+          <button class="btn-primary" onclick="exportExamTxt()" title="匯出純文字檔">
+            匯出文字檔
+          </button>
+        </div>
+      </div>
+
+      <!-- Exam Paper Content Container -->
+      <div id="examPaperContainer">
+        <!-- Rendered by app.js -->
+      </div>
+    </section>
+
+    <!-- TAB 4: 我的收藏 (Favorites) -->
+    <section id="view-favorites" class="tab-content" style="display:none;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+        <h2 style="font-family: var(--font-serif); font-size:1.1rem; font-weight:700; color:var(--text-sumi);">重點收藏題庫</h2>
+        <div class="stats-badge" id="favCountBadge">已收藏 0 題</div>
+      </div>
+      <div id="favoritesContainer">
+        <!-- Rendered by app.js -->
+      </div>
+    </section>
+
+    <!-- TAB 5: 題庫統計 (Stats) -->
+    <section id="view-stats" class="tab-content" style="display:none;">
+      <div id="statsContainer">
+        <!-- Rendered by app.js -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Load Data and Logic -->
+  <script src="questions_data.js"></script>
+  <script src="answers_data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
+'''
+
+with open(os.path.join(WEB_DIR, 'index.html'), 'w', encoding='utf-8') as f:
+    f.write(html_content.strip() + '\n')
+print('Updated web/index.html successfully!')
